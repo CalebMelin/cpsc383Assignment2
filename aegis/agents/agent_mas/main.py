@@ -127,9 +127,9 @@ def think() -> None:
 from math import inf
 from typing import Dict, Tuple, List
 
-# ------------------------------
+
 #  Helper functions
-# ------------------------------
+
 def distance_finder(a: Tuple[int, int], b: Tuple[int, int]) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
@@ -149,10 +149,7 @@ def nearest_survivor(my_loc: Tuple[int, int], survivors: List[Tuple[int, int]]):
 def get_leader_id(agent_ids: List[int]) -> int:
     return min(agent_ids) if agent_ids else -1
 
-
-# ------------------------------
 #  Main planner logic
-# ------------------------------
 def planner_step(all_agents: Dict[int, Tuple[int, int]]):
     from aegis import (
         get_id,
@@ -165,9 +162,8 @@ def planner_step(all_agents: Dict[int, Tuple[int, int]]):
         log,
     )
 
-    # --------------------------------------------------------
     # 1. Agent state
-    # --------------------------------------------------------
+    
     my_id = get_id()
     my_loc = get_location()
     energy = get_energy_level()
@@ -186,9 +182,8 @@ def planner_step(all_agents: Dict[int, Tuple[int, int]]):
     if is_leader:
         log(f"[Planner] I am the leader (ID {leader_id})")
 
-    # --------------------------------------------------------
     # 3. Energy check — go charge if needed
-    # --------------------------------------------------------
+
     if energy < 10:
         target_charger = nearest_charger(my_loc, chargers)
         if target_charger:
@@ -198,9 +193,9 @@ def planner_step(all_agents: Dict[int, Tuple[int, int]]):
         else:
             log("[Energy] WARNING: No chargers detected!")
 
-    # --------------------------------------------------------
+
     # 4. Leader assigns survivors
-    # --------------------------------------------------------
+    
     if is_leader and survivors:
         for agent_id, loc in all_agents.items():
             target = nearest_survivor(loc, survivors)
@@ -208,9 +203,8 @@ def planner_step(all_agents: Dict[int, Tuple[int, int]]):
                 send_message(f"ASSIGN {target[0]} {target[1]}", [agent_id])
                 log(f"[Leader] Assigned Agent {agent_id} → Survivor at {target}")
 
-    # --------------------------------------------------------
+   
     # 5. Read & react to messages
-    # --------------------------------------------------------
     inbox = read_messages()
     for msg in inbox:
         parts = msg.split()
@@ -231,8 +225,5 @@ def planner_step(all_agents: Dict[int, Tuple[int, int]]):
         else:
             log(f"[Message] Unknown message type: {msg}")
 
-    # --------------------------------------------------------
-    # 6. Optional — send heartbeat/status
-    # --------------------------------------------------------
     send_message(f"STATUS {my_id} {energy} {my_loc[0]} {my_loc[1]}", [])
     log(f"[Planner] Step complete for Agent {my_id}\n")
