@@ -256,3 +256,53 @@ def think() -> None:
 
     # Default action: Move the agent north if no other specific conditions are met.
     move(Direction.NORTH)
+
+    # Person 2 logic
+
+    # Step 1: Basic role - assign nearest survivor
+    agent_positions = {me: my_loc}
+    target = nearest_survivor(my_loc, survivors)
+    if not target:
+        # No survivors left — idle or move north slowly
+        move(Direction.NORTH)
+        return
+
+    # Step 2: Compute route to target
+    route = aStar(my_loc, target)
+    if route is None or len(route) == 0:
+        # fallback
+        move(Direction.CENTER)
+        return
+
+    nxt = route[0]
+    step_dir = my_loc.direction_to(nxt)
+
+    # Step 3: Simple re-planning/energy logic
+    route_ambiguous = False
+    rubble_needs_help = False
+    top_next = get_cell_info_at(nxt).top_layer
+    if isinstance(top_next, Rubble):
+        rubble_needs_help = getattr(top_next, "agents_required", 1) == 2
+
+    priorities = choose_action_priority(my_energy, route_ambiguous, rubble_needs_help)
+    log("Priorities: {}".format(priorities))
+
+    # Step 4: If rubble needs two agents, request help
+    if rubble_needs_help:
+        send_message("HELP_REQ {} {}".format(nxt.x, nxt.y), [])
+        move(Direction.CENTER)
+        return
+
+    # Step 5: If energy low, head toward nearest charger
+    if my_energy < 10 and chargers:
+        nearest_c = min(chargers, key=lambda c: abs(c.x - my_loc.x) + abs(c.y - my_loc.y))
+        path_c = aStar(my_loc, nearest_c)
+        if path_c:
+            move(my_loc.direction_to(path_c[0]))
+            return
+        else:
+            move(Direction.CENTER)
+            return
+
+    # Step 6: Default movement toward target
+    move(step_dir)
