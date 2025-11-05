@@ -63,7 +63,13 @@ def aStar(start: Location, goal: Location):
                 came_from[key] = current
     return None
 
+
+
+#Caleb: Navigation and Sensing Pathing
+
+#Route object to carry pathing and sensing results between modules
 class Route:
+    #directions:list[Direction], cost:int, blocked:bool, ambiguous:bool, probe_loc:Location|None
     def __init__(self, directions, cost, blocked, ambiguous, probe_loc):
         self.directions = directions
         self.cost = cost
@@ -71,10 +77,13 @@ class Route:
         self.ambiguous = ambiguous
         self.probe_loc = probe_loc
 
-def rubble_here_requires_pair(block, loc):
+#rubble_here_requires_pair:True/False if known; None if unknown it triggers scan or adjacency
+def rubble_here_requires_pair(blk, loc: Location) -> bool | None:
+    #cache lookup if known
     key = (loc.x, loc.y)
-    if hasattr(block, "known_rubble") and key in block.known_rubble and "agents_required" in block.known_rubble[key]:
-        return block.known_rubble[key]["agents_required"] >= 2
+    if hasattr(blk, "known_rubble") and key in blk.known_rubble and "agents_required" in blk.known_rubble[key]:
+        return blk.known_rubble[key]["agents_required"] >= 2
+    #adjacent or same tile reveals full layers
     me = get_location()
     if max(abs(me.x - loc.x), abs(me.y - loc.y)) <= 1:
         top = get_cell_info_at(loc).top_layer
