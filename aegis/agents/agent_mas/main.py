@@ -17,7 +17,7 @@ DIRECTIONS_TIEBREAK_ORDER = [
 #Lookup for order index
 DIR_ORDER_IDX = {d: i for i, d in enumerate(DIRECTIONS_TIEBREAK_ORDER)}
 
-#Helpers for the A* algorithma
+#Helpers for the A* algorithm
 def isSame(a: Location, b: Location) -> bool:
     return a.x == b.x and a.y == b.y
 
@@ -81,6 +81,140 @@ def aStar(start: Location, goal: Location) -> list[Location] | None:
                 came_from[key] = current
     return None
 
+
+
+#Caleb: Navigation and Sensing Pathing
+
+#Route object to carry pathing and sensing results between modules
+class Route:
+    #directions:list[Direction], cost:int, blocked:bool, ambiguous:bool, probe_loc:Location|None
+    def __init__(self, directions, cost, blocked, ambiguous, probe_loc):
+        self.directions = directions
+        self.cost = cost
+        self.blocked = blocked
+        self.ambiguous = ambiguous
+        self.probe_loc = probe_loc
+
+#rubble_here_requires_pair:True/False if known; None if unknown it triggers scan or adjacency
+def rubble_here_requires_pair(blk, loc: Location) -> bool | None:
+    #cache lookup if known
+    key = (loc.x, loc.y)
+    if hasattr(blk, "known_rubble") and key in blk.known_rubble and "agents_required" in blk.known_rubble[key]:
+        return blk.known_rubble[key]["agents_required"] >= 2
+    #adjacent or same tile reveals full layers
+    me = get_location()
+    if max(abs(me.x - loc.x), abs(me.y - loc.y)) <= 1:
+        top = get_cell_info_at(loc).top_layer
+        if isinstance(top, Rubble):
+            if hasattr(blk, "known_rubble"):
+                blk.known_rubble[key] = {"agents_required": top.agents_required, "energy_required": getattr(top, "energy_required", None)}
+            return top.agents_required >= 2
+        return False
+    #unknown if not adjacent and not scanned into cache
+    return None
+
+#scan_policy:return probe_loc if route is unknown otherwise None
+def scan_policy(blk, route: Route) -> Location | None:
+    if route.ambiguous and route.probe_loc is not None:
+        return route.probe_loc
+    return None
+
+#estimate_path_cost:sum of move costs via A* and fallback to Manhattan method if route is blocked
+def estimate_path_cost(src: Location, dst: Location) -> int:
+    if not on_map(src) or not on_map(dst):
+        return 1_000_000
+    path, cost = _astar(src, dst)
+    if path is None:
+        dx = abs(src.x - dst.x)
+        dy = abs(src.y - dst.y)
+        return dx + dy
+    return cost
+
+#plan_route:returns the Route with uncertainty flagged when rubble requirements are unknown on path
+def plan_route(src: Location, dst: Location, blk) -> Route:
+    if src.x == dst.x and src.y == dst.y:
+        return Route(directions=[], cost=0, blocked=False, ambiguous=False, probe_loc=None)
+    path_locs, total_cost = _astar(src, dst)
+    if path_locs is None or len(path_locs) == 0:
+        return Route(directions=[], cost=0, blocked=True, ambiguous=False, probe_loc=None)
+    probe_loc = None
+    ambiguous = False
+    for step in path_locs:
+        top = get_cell_info_at(step).top_layer
+        if isinstance(top, Rubble):
+            needs_pair = rubble_here_requires_pair(blk, step)
+            if needs_pair is None:
+                probe_loc = step
+                ambiguous = True
+                break
+    directions = _locations_to_directions(src, path_locs)
+    return Route(directions=directions, cost=total_cost, blocked=False, ambiguous=ambiguous, probe_loc=probe_loc)
+
+#step_toward:returns next direction or None if at the destination
+def step_toward(route: Route) -> Direction | None:
+    if not route.directions:
+        return None
+    return route.directions[0]
+
+
+#internal helpers
+
+#locations to directions from source
+def _locations_to_directions(src: Location, waypoints: list[Location]) -> list[Direction]:
+    dirs: list[Direction] = []
+    cur = src
+    for nxt in waypoints:
+        dirs.append(cur.direction_to(nxt))
+        cur = nxt
+    return dirs
+
+#safe check for killer cells uses the existing map and cell info
+def _is_safe(loc: Location) -> bool:
+    return on_map(loc) and (not get_cell_info_at(loc).is_killer_cell())
+
+#hidden-cost guard: unknown treated as cost=1
+def _move_cost_of(loc: Location) -> int:
+    cell = get_cell_info_at(loc)
+    return max(1, cell.move_cost)
+
+#diagonal-aware heuristic
+def _diag_heuristic(a: Location, b: Location) -> float:
+    dx = abs(a.x - b.x)
+    dy = abs(a.y - b.y)
+    return (dx + dy) + (math.sqrt(2) - 2) * min(dx, dy)
+
+#neighbors in the fixed order reuses the global tiebreak list, skip CENTER
+def _neighbors_in_order(loc: Location):
+    for d in DIRECTIONS_TIEBREAK_ORDER[:-1]:
+        nxt = loc.add(d)
+        if _is_safe(nxt):
+            yield nxt, d
+
+#A* with tie-breaking(f,g,dirOrder) using the global DIR_ORDER_IDX
+def _astar(start: Location, goal: Location) -> tuple[list[Location] | None, int]:
+    frontier: list[tuple[float, int, int, int, int]] = []
+    heapq.heappush(frontier, (_diag_heuristic(start, goal), 0, DIR_ORDER_IDX[Direction.CENTER], start.x, start.y))
+    came_from: dict[tuple[int, int], Location] = {(start.x, start.y): start}
+    g_cost: dict[tuple[int, int], int] = {(start.x, start.y): 0}
+    while frontier:
+        f, g, order, cx, cy = heapq.heappop(frontier)
+        cur = Location(cx, cy)
+        if cur.x == goal.x and cur.y == goal.y:
+            path: list[Location] = []
+            while not (cur.x == start.x and cur.y == start.y):
+                path.append(cur)
+                cur = came_from[(cur.x, cur.y)]
+            path.reverse()
+            return path, g_cost[(goal.x, goal.y)]
+        for nxt, d in _neighbors_in_order(cur):
+            key = (nxt.x, nxt.y)
+            tentative_g = g_cost[(cx, cy)] + _move_cost_of(nxt)
+            if key not in g_cost or tentative_g < g_cost[key]:
+                g_cost[key] = tentative_g
+                came_from[key] = cur
+                heapq.heappush(frontier, (tentative_g + _diag_heuristic(nxt, goal), tentative_g, DIR_ORDER_IDX[d], nxt.x, nxt.y))
+    return None, 0
+
 def think() -> None:
     """Do not remove this function, it must always be defined."""
     log("Thinking")
@@ -122,108 +256,3 @@ def think() -> None:
 
     # Default action: Move the agent north if no other specific conditions are met.
     move(Direction.NORTH)
-
-
-from math import inf
-from typing import Dict, Tuple, List
-
-
-#  Helper functions
-
-def distance_finder(a: Tuple[int, int], b: Tuple[int, int]) -> int:
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
-
-
-def nearest_charger(my_loc: Tuple[int, int], chargers: List[Tuple[int, int]]):
-    if not chargers:
-        return None
-    return min(chargers, key=lambda c: manhattan(my_loc, c))
-
-
-def nearest_survivor(my_loc: Tuple[int, int], survivors: List[Tuple[int, int]]):
-    if not survivors:
-        return None
-    return min(survivors, key=lambda s: manhattan(my_loc, s))
-
-
-def get_leader_id(agent_ids: List[int]) -> int:
-    return min(agent_ids) if agent_ids else -1
-
-#  Main planner logic
-def planner_step(all_agents: Dict[int, Tuple[int, int]]):
-    from aegis import (
-        get_id,
-        get_location,
-        get_energy_level,
-        get_survs,
-        get_chrg,
-        send_message,
-        read_messages,
-        log,
-    )
-
-    # 1. Agent state
-    
-    my_id = get_id()
-    my_loc = get_location()
-    energy = get_energy_level()
-    survivors = get_survs()
-    chargers = get_chrg()
-
-    log(f"[Planner] Agent {my_id} | Location={my_loc} | Energy={energy}")
-    log(f"[Planner] Survivors: {survivors}")
-    log(f"[Planner] Chargers: {chargers}")
-
-    # --------------------------------------------------------
-    # 2. Leader election (lowest ID)
-    # --------------------------------------------------------
-    leader_id = get_leader_id(list(all_agents.keys()))
-    is_leader = my_id == leader_id
-    if is_leader:
-        log(f"[Planner] I am the leader (ID {leader_id})")
-
-    # 3. Energy check — go charge if needed
-
-    if energy < 10:
-        target_charger = nearest_charger(my_loc, chargers)
-        if target_charger:
-            log(f"[Energy] Low energy ({energy}). Moving to charger at {target_charger}")
-            send_message(f"CHARGE {target_charger[0]} {target_charger[1]}", [])
-            # TODO: call your movement/navigation here, e.g. move_toward(target_charger)
-        else:
-            log("[Energy] WARNING: No chargers detected!")
-
-
-    # 4. Leader assigns survivors
-    
-    if is_leader and survivors:
-        for agent_id, loc in all_agents.items():
-            target = nearest_survivor(loc, survivors)
-            if target:
-                send_message(f"ASSIGN {target[0]} {target[1]}", [agent_id])
-                log(f"[Leader] Assigned Agent {agent_id} → Survivor at {target}")
-
-   
-    # 5. Read & react to messages
-    inbox = read_messages()
-    for msg in inbox:
-        parts = msg.split()
-        if not parts:
-            continue
-
-        tag = parts[0]
-        if tag == "ASSIGN":
-            x, y = int(parts[1]), int(parts[2])
-            log(f"[Message] Assigned to survivor at ({x}, {y})")
-            # TODO: move_toward((x, y))
-        elif tag == "CHARGE":
-            x, y = int(parts[1]), int(parts[2])
-            log(f"[Message] Another agent is charging at ({x}, {y})")
-        elif tag == "HELP":
-            x, y = int(parts[1]), int(parts[2])
-            log(f"[Message] Help requested at ({x}, {y}) — consider assisting.")
-        else:
-            log(f"[Message] Unknown message type: {msg}")
-
-    send_message(f"STATUS {my_id} {energy} {my_loc[0]} {my_loc[1]}", [])
-    log(f"[Planner] Step complete for Agent {my_id}\n")
