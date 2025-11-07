@@ -2,13 +2,14 @@ from aegis_game.stub import *
 import heapq
 import math
 
+
+
 DIRECTIONS_TIEBREAK_ORDER = [
     Direction.NORTH, Direction.NORTHEAST, Direction.EAST, Direction.SOUTHEAST,
     Direction.SOUTH, Direction.SOUTHWEST, Direction.WEST, Direction.NORTHWEST,
     Direction.CENTER,
 ]
 DIR_ORDER_IDX = {d: i for i, d in enumerate(DIRECTIONS_TIEBREAK_ORDER)}
-
 
 def isSame(a: Location, b: Location) -> bool:
     return a.x == b.x and a.y == b.y
@@ -29,12 +30,10 @@ def neighborsInOrder(loc: Location):
         if on_map(nxt) and isSafe(nxt):
             yield nxt, d
 
-
 def heuristic(a: Location, b: Location) -> float:
     dx = abs(a.x - b.x)
     dy = abs(a.y - b.y)
     return (dx + dy) + (math.sqrt(2) - 2) * min(dx, dy)
-
 
 def rebuildPath(came_from, start, goal):
     cur = goal
@@ -44,7 +43,6 @@ def rebuildPath(came_from, start, goal):
         cur = came_from[(cur.x, cur.y)]
     path.reverse()
     return path
-
 
 def aStar(start: Location, goal: Location):
     frontier = []
@@ -99,7 +97,6 @@ def rubble_here_requires_pair(blk, loc: Location) -> bool | None:
             return top.agents_required >= 2
         return False
     return None
-
 
 def scan_policy(block, route):
     if route.ambiguous and route.probe_loc is not None:
@@ -342,101 +339,47 @@ def think():
 
     top = get_cell_info_at(my_loc).top_layer
     if isinstance(top, Survivor):
-        if my_energy >= SAVE_COST:
-            save()
-            send_message(f"SAVED|{me}|{my_loc.x},{my_loc.y}", [])
-            return
+        save()
+        send_message(f"SAVED|{me}|{my_loc.x},{my_loc.y}", [])
+        return
+
+    if my_energy < 10:
+        charger = choose_charger(my_loc)
+        if charger:
+            path = aStar(my_loc, charger)
+            if path:
+                nxt = path[0]
+                move(my_loc.direction_to(nxt))
+            else:
+                move(Direction.CENTER)
+        else:
+            move(Direction.CENTER)
+        return
+
+    survivors = get_survs()
+    if me not in ASSIGNMENTS or ASSIGNMENTS[me] is None:
+        target = nearest_survivor(my_loc, survivors)
+        if target:
+            ASSIGNMENTS[me] = (target.x, target.y)
         else:
             move(Direction.CENTER)
             return
 
-    survivors = get_survs()
-    if not survivors:
-        move(Direction.CENTER)
-        return
+    target = ASSIGNMENTS[me]
+    goal = Location(target[0], target[1])
+    route = aStar(my_loc, goal)
 
-    target, route, route_cost = best_survivor_by_energy(my_loc, survivors)
-
-    # no route to reach target then do nothing
-    if (route is None):
-        move(Direction.CENTER)
-        return
-
-    # if it goes under this if it means it has enough energy to reach survivor
-    if my_energy >= route_cost + BUFFER:
+    if route and len(route) > 0:
         nxt = route[0]
         top_next = get_cell_info_at(nxt).top_layer
         if isinstance(top_next, Rubble):
             send_message(f"HELP_REQ|{me}|{nxt.x},{nxt.y}", [])
-            # need some sort of communication logic and get attribute that 2 or more ppl needed
-        move(my_loc.direction_to(nxt))
-        return
-
-    # is it on charger already
-    if on_charger(my_loc):
-        route_to_goal = aStar(my_loc, target)
-        if not route_to_goal or len(route_to_goal) == 0:
             move(Direction.CENTER)
             return
-        cost_from_here = estimate_path_energy_to_a_goal(route_to_goal) if route_to_goal else 10 ** 9
-        need = cost_from_here + BUFFER
 
-        if my_energy < need:
-            recharge()
-            return
-        else:
-            nxt = route_to_goal[0]
-            move(my_loc.direction_to(nxt))
-            return
-
-    # if it's here it means not enough energy to reach survivor
-    chg, path_chg, cost_chg = best_charger_by_energy(my_loc)
-
-    # no charger or not enough energy to reach charger
-    if (chg is None) or (my_energy < cost_chg):
-        move(Direction.CENTER)
-        return
-
-    # go to charger
-    if not on_charger(my_loc):
-        nxt = path_chg[0]
+    if route and len(route) > 0:
+        nxt = route[0]
         move(my_loc.direction_to(nxt))
         return
 
-    # if route and len(route) > 0:
-    #     nxt = route[0]
-    #     top_next = get_cell_info_at(nxt).top_layer
-    #     if isinstance(top_next, Rubble):
-    #         send_message(f"HELP_REQ|{me}|{nxt.x},{nxt.y}", [])
-    #         move(Direction.CENTER)
-    #         return
-
-    # if route and len(route) > 0:
-    #     nxt = route[0]
-    #     move(my_loc.direction_to(nxt))
-    #     return
-
-    # move(Direction.CENTER)
-
-
-# if my_energy < 10:
-#     charger = choose_charger(my_loc)
-#     if charger:
-#         path = aStar(my_loc, charger)
-#         if path:
-#             nxt = path[0]
-#             move(my_loc.direction_to(nxt))
-#         else:
-#             move(Direction.CENTER)
-#     else:
-#         move(Direction.CENTER)
-#     return
-
-# survivors = get_survs()
-# if me not in ASSIGNMENTS or ASSIGNMENTS[me] is None:
-#     target = nearest_survivor(my_loc, survivors)
-#     if target:
-#         ASSIGNMENTS[me] = (target.x, target.y)
-#     else:
-#         move(Direction.CENTER)
-#         return
+    move(Direction.CENTER)
