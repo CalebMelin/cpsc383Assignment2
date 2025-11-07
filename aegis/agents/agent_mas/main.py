@@ -14,12 +14,15 @@ DIR_ORDER_IDX = {d: i for i, d in enumerate(DIRECTIONS_TIEBREAK_ORDER)}
 def isSame(a: Location, b: Location) -> bool:
     return a.x == b.x and a.y == b.y
 
+
 def moveCostOf(loc: Location) -> int:
     cell = get_cell_info_at(loc)
     return max(1, cell.move_cost)
 
+
 def isSafe(loc: Location) -> bool:
     return not get_cell_info_at(loc).is_killer_cell()
+
 
 def neighborsInOrder(loc: Location):
     for d in DIRECTIONS_TIEBREAK_ORDER[:-1]:
@@ -64,12 +67,11 @@ def aStar(start: Location, goal: Location):
     return None
 
 
+# Caleb: Navigation and Sensing Pathing
 
-#Caleb: Navigation and Sensing Pathing
-
-#Route object to carry pathing and sensing results between modules
+# Route object to carry pathing and sensing results between modules
 class Route:
-    #directions:list[Direction], cost:int, blocked:bool, ambiguous:bool, probe_loc:Location|None
+    # directions:list[Direction], cost:int, blocked:bool, ambiguous:bool, probe_loc:Location|None
     def __init__(self, directions, cost, blocked, ambiguous, probe_loc):
         self.directions = directions
         self.cost = cost
@@ -77,19 +79,21 @@ class Route:
         self.ambiguous = ambiguous
         self.probe_loc = probe_loc
 
-#rubble_here_requires_pair:True/False if known; None if unknown it triggers scan or adjacency
+
+# rubble_here_requires_pair:True/False if known; None if unknown it triggers scan or adjacency
 def rubble_here_requires_pair(blk, loc: Location) -> bool | None:
-    #cache lookup if known
+    # cache lookup if known
     key = (loc.x, loc.y)
     if hasattr(blk, "known_rubble") and key in blk.known_rubble and "agents_required" in blk.known_rubble[key]:
         return blk.known_rubble[key]["agents_required"] >= 2
-    #adjacent or same tile reveals full layers
+    # adjacent or same tile reveals full layers
     me = get_location()
     if max(abs(me.x - loc.x), abs(me.y - loc.y)) <= 1:
         top = get_cell_info_at(loc).top_layer
         if isinstance(top, Rubble):
-            if hasattr(block, "known_rubble"):
-                block.known_rubble[key] = {"agents_required": top.agents_required, "energy_required": getattr(top, "energy_required", None)}
+            if hasattr(blk, "known_rubble"):
+                blk.known_rubble[key] = {"agents_required": top.agents_required,
+                                         "energy_required": getattr(top, "energy_required", None)}
             return top.agents_required >= 2
         return False
     return None
@@ -99,18 +103,26 @@ def scan_policy(block, route):
         return route.probe_loc
     return None
 
+
 # renamed helpers
 def safe_is_safe(loc): return on_map(loc) and (not get_cell_info_at(loc).is_killer_cell())
+
+
 def safe_move_cost(loc): return max(1, get_cell_info_at(loc).move_cost)
+
+
 def safe_diag_heuristic(a, b):
     dx = abs(a.x - b.x)
     dy = abs(a.y - b.y)
     return (dx + dy) + (math.sqrt(2) - 2) * min(dx, dy)
+
+
 def safe_neighbors_in_order(loc):
     for d in DIRECTIONS_TIEBREAK_ORDER[:-1]:
         nxt = loc.add(d)
         if safe_is_safe(nxt):
             yield nxt, d
+
 
 def safe_astar(start, goal):
     frontier = []
@@ -133,8 +145,11 @@ def safe_astar(start, goal):
             if key not in g_cost or tentative_g < g_cost[key]:
                 g_cost[key] = tentative_g
                 came_from[key] = cur
-                heapq.heappush(frontier, (tentative_g + safe_diag_heuristic(nxt, goal), tentative_g, DIR_ORDER_IDX[d], nxt.x, nxt.y))
+                heapq.heappush(frontier,
+                               (tentative_g + safe_diag_heuristic(nxt, goal), tentative_g, DIR_ORDER_IDX[d], nxt.x,
+                                nxt.y))
     return None, 0
+
 
 def plan_route(src, dst, block):
     if src.x == dst.x and src.y == dst.y:
@@ -155,6 +170,7 @@ def plan_route(src, dst, block):
     directions = locations_to_directions(src, path_locs)
     return Route(directions, total_cost, False, ambiguous, probe_loc)
 
+
 def locations_to_directions(src, waypoints):
     dirs = []
     cur = src
@@ -162,6 +178,7 @@ def locations_to_directions(src, waypoints):
         dirs.append(cur.direction_to(nxt))
         cur = nxt
     return dirs
+
 
 def step_toward(route):
     if not route.directions:
@@ -175,22 +192,39 @@ def step_toward(route):
 ASSIGNMENTS = {}
 LEADER_ID = None
 
+
+# def choose_leader():
+#     ids = [get_id()]
+#     for msg in read_messages():
+#         try:
+#             text = getattr(msg, "text", "")
+#             if isinstance(text, str) and text.startswith("STATUS|"):
+#                 parts = text.split("|")
+#                 if len(parts) > 1 and parts[1].isdigit():
+#                     ids.append(int(parts[1]))
+#         except Exception as e:
+#             log(f"Leader parse fail: {e}")
+#     return min(ids)
+
 def choose_leader():
     ids = [get_id()]
     for msg in read_messages():
         try:
-            text = getattr(msg, "text", "")
-            if isinstance(text, str) and text.startswith("STATUS|"):
-                parts = text.split("|")
-                if len(parts) > 1 and parts[1].isdigit():
-                    ids.append(int(parts[1]))
-        except Exception as e:
-            log(f"Leader parse fail: {e}")
+            text = msg.text
+        except Exception:
+            text = ""
+        if isinstance(text, str) and text.startswith("STATUS|"):
+            parts = text.split("|")
+            if len(parts) > 1 and parts[1].isdigit():
+                ids.append(int(parts[1]))
     return min(ids)
+
+
 def nearest_survivor(my_loc, survivors):
     if not survivors:
         return None
     return min(survivors, key=lambda s: abs(my_loc.x - s.x) + abs(my_loc.y - s.y))
+
 
 def choose_charger(my_loc):
     chargers = get_chrg()
@@ -198,6 +232,96 @@ def choose_charger(my_loc):
         return None
     return min(chargers, key=lambda c: abs(c.x - my_loc.x) + abs(c.y - my_loc.y))
 
+
+######## yeogiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii##############
+# UCID HEEYOUND HAN
+# heeoyoun han
+BUFFER = 5
+DEFAULT_DIG = 10
+SAVE_COST = 1
+
+
+# estimate whether there is a dig or not needed at the end
+# def estimate_goal_tail_energy(goal: Location) -> int:
+
+#     top = get_cell_info_at(goal).top_layer
+#     tail = SAVE_COST
+#     if isinstance(top, Rubble):
+#         tail += getattr(top, "energy_required", DEFAULT_DIG)
+#     return tail
+def estimate_goal_tail_energy(goal: Location) -> int:
+    top = get_cell_info_at(goal).top_layer
+    tail = SAVE_COST
+    if isinstance(top, Rubble):
+        energy_req = DEFAULT_DIG
+        try:
+            energy_req = top.energy_required
+        except Exception:
+            pass
+        tail = tail + energy_req
+    return tail
+
+
+# if no path return a large number or else calculate total energy cost of path
+def estimate_path_energy_to_a_goal(path: list[Location]) -> int:
+    if not path:
+        return 10 ** 9
+    total = 0
+    for p in path:
+        total += moveCostOf(p)
+
+    total += estimate_goal_tail_energy(path[-1])
+    return total
+
+
+# for going to recharging centers, we dont need a dig or save
+def estimate_move_cost(path: list[Location]) -> int:
+    if not path:
+        return 10 ** 9
+    total = 0
+    for p in path:
+        total += moveCostOf(p)
+    return total
+
+
+# best survivor by actual energy cost of remaining by the agent
+# goes through all survivors and finds the one with least energy cost path
+def best_survivor_by_energy(my_loc: Location, survivors: list[Location]):
+    best_s, best_path, best_cost = None, None, 10 ** 9
+    for s in survivors:
+        p = aStar(my_loc, s)
+        if p:
+            c = estimate_path_energy_to_a_goal(p)
+            if c < best_cost:
+                best_s, best_path, best_cost = s, p, c
+    return best_s, best_path, best_cost
+
+
+# find the charger with the least actual energy cost to reach almost the same as survivor code
+# but separated for furture use including maintenance
+def best_charger_by_energy(my_loc: Location):
+    chargers = get_charging_cells()
+    if not chargers:
+        return None, None, 10 ** 9
+    best_c, best_p, best_cst = None, None, 10 ** 9
+    for c in chargers:
+        p = aStar(my_loc, c)
+        if p:
+            cst = estimate_move_cost(p)
+            if cst < best_cst:
+                best_c, best_p, best_cst = c, p, cst
+    return best_c, best_p, best_cst
+
+
+# checks if the agent is really on a charger where it can recharge
+def on_charger(loc: Location) -> bool:
+    for c in get_charging_cells():
+        if c.x == loc.x and c.y == loc.y:
+            return True
+    return False
+
+
+##############yeogiiiiiiiiiiiiiiiii################
 def think():
     me = get_id()
     my_loc = get_location()
