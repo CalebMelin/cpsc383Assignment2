@@ -11,6 +11,40 @@ DIRECTIONS_TIEBREAK_ORDER = [
 ]
 DIR_ORDER_IDX = {d: i for i, d in enumerate(DIRECTIONS_TIEBREAK_ORDER)}
 
+#--- global blackboard for Person 4 (persist known_rubble across rounds)
+class Blackboard:
+    pass
+BLACKBOARD = Blackboard()
+BLACKBOARD.known_rubble = {}
+# remember which rubble tiles we've already scanned so we don't spam scans
+BLACKBOARD.scanned = set()
+BLACKBOARD.help_queue = []
+
+#capture scanned rubble attributes into BLACKBOARD.known_rubble
+def capture_rubble_knowledge(blk, loc: Location) -> None:
+    try:
+        cell = get_cell_info_at(loc)
+        top = cell.top_layer
+        if isinstance(top, Rubble):
+            key = (loc.x, loc.y)
+            # ensure dict exists without getattr/hasattr
+            try:
+                _ = blk.known_rubble
+            except Exception:
+                blk.known_rubble = {}
+            # read energy_required without getattr
+            try:
+                er = top.energy_required
+            except Exception:
+                er = None
+            blk.known_rubble[key] = {
+                "agents_required": top.agents_required if isinstance(top, Rubble) else None,
+                "energy_required": er,
+            }
+    except Exception:
+        # best-effort cache; ignore any transient read issues
+        pass
+
 def isSame(a: Location, b: Location) -> bool:
     return a.x == b.x and a.y == b.y
 
@@ -74,12 +108,33 @@ def encode_status(blk):
     loc = get_location()
     round_number = get_round_number()
 
-    # Get each part of the status message from the shared blackboard. If there is None, assign the part an empty dict.
-    status = (getattr(blk, "status", None) or {}).get(me)
-    target = (getattr(blk, "target", None) or {}).get(me)
-    target_agent = (getattr(blk, "target_agent", None) or {}).get(me)
-    command = (getattr(blk, "command", None) or {}).get(me)
-    priority_of_command = (getattr(blk, "priority_of_command", None) or {}).get(me)
+    #Get each part of the status message from the shared blackboard with safe access
+    try:
+        status_map = blk.status
+    except Exception:
+        status_map = {}
+    try:
+        target_map = blk.target
+    except Exception:
+        target_map = {}
+    try:
+        target_agent_map = blk.target_agent
+    except Exception:
+        target_agent_map = {}
+    try:
+        command_map = blk.command
+    except Exception:
+        command_map = {}
+    try:
+        priority_map = blk.priority_of_command
+    except Exception:
+        priority_map = {}
+
+    status = (status_map or {}).get(me)
+    target = (target_map or {}).get(me)
+    target_agent = (target_agent_map or {}).get(me)
+    command = (command_map or {}).get(me)
+    priority_of_command = (priority_map or {}).get(me)
 
 
     msg = {
@@ -101,7 +156,14 @@ def broadcast(msg: dict):
     # message to everyone but the broadcasting agent
     if msg and msg.get("msg_type") == "STATUS":
         me = msg.get("from_id")
-        send_message(f"STATUS|{me}", [])
+        loc = msg.get("loc")
+        # loc is a Location; protect in case None
+        if isinstance(loc, Location):
+            send_message(f"STATUS|{me}|{loc.x},{loc.y}", [])
+        else:
+            # fallback if loc missing
+            my_loc = get_location()
+            send_message(f"STATUS|{me}|{my_loc.x},{my_loc.y}", [])
 
 # read and parse through messages from the previous round (messages send at the end of a round)
 def read_inbox():
@@ -137,8 +199,10 @@ def handshake_for_dig(blk, rubble_loc: Location):
     x, y = (rubble_loc.x, rubble_loc.y)
     loc_string = f"{x},{y}"
 
-    # if there is no help_queue, set the help_queue to be an empty list.
-    if getattr(blk, "help_queue", None) is None:
+    # ensure help_queue exists (no getattr)
+    try:
+        _ = blk.help_queue
+    except Exception:
         blk.help_queue = []
 
 
@@ -148,154 +212,13 @@ def handshake_for_dig(blk, rubble_loc: Location):
         if i.get("loc") == loc_string:
             record = i
             break
-    # Read inbox.
-    inbox = read_inbox()
-
-    # If there is no record, then either become the requestor for help or become the helper.
-    if record is None:
-        req_msg = None
-        # Check inbox for an agents HELP_REQ for this rubble location.
-        for m in inbox:
-            if (m["msg_type"] == "HELP_REQ" and len(m["parts"]) >= 3
-            and m["parts"][2] == loc_string and m["sender_id"] != me):
-                req_msg = m
-                break
-        # Become the helper and send a message of acknowledgement that you will help.
-        if req_msg is not None:
-            req_id = req_msg["sender_id"]
-            send_message(f"ACK|{me}|{loc_string}", [req_id])
-            record = {
-                "loc": loc_string,
-                "req_id": req_id,
-                "helper_id": me,
-                "phase": "EN_ROUTE",
-                "dig_round": None
-            }
-            blk.help_queue.append(record)
-            return None
-
-
-        if not (loc.x == x and loc.y == y):
-            return None
-        send_message(f"HELP_REQ|{me}|{loc_string}", [])
-        record = {
-            "loc": loc_string,
-            "req_id": me,
-            "helper_id": None,
-            "phase": "waiting_for_ack",
-            "dig_round": None
-        }
-        blk.help_queue.append(record)
-        return None
-
-    # Little helper to check if a message exists at the location. if the msg type does not match the parameter then continue.
-    def find_msg(msg_type, from_id = None, min_parts = 3):
-        for m in inbox:
-            if m["msg_type"] != msg_type:
-                continue
-            # Make sure the length of the message matches the required parts, and that the index 2 is the location.
-            # Then if the from_id is None let the message come from whoever, otherwise if there is a specific "sender_id"
-            # then make that the from_id.
-            if len(m["parts"]) >= min_parts and m["parts"][2] == loc_string:
-                if from_id is None or m["sender_id"] == from_id:
-                    return m
-        return None
-
-    # Requestor
-    if record["req_id"] == me:
-        if record["phase"] == "waiting_for_ack":
-            ack = find_msg("ACK")
-            # If acknowledgement, then the helper id is who sent the acknowledgement message.
-            if ack:
-                record["helper_id"] = ack["sender_id"]
-                record["phase"] = "waiting_at_loc"
-            return None
-
-        # A requestor agent is waiting at the rubble location.
-        if record["phase"] == "waiting_at_loc":
-            at_loc = find_msg("AT_LOC", from_id = record["helper_id"])
-            if at_loc:
-                dig_round = round_number + 1
-                send_message(f"READY_DIG|{me}|{loc_string}|{dig_round}", [record["helper_id"]])
-                record["dig_round"] = dig_round
-                record["phase"] = "ready"
-                return dig_round
-            return None
-
-        # A requestor has phase ready and while it is ready it returns "ready"
-        if record["phase"] == "ready":
-            return record.get("dig_round")
-        return None
-
-    # Helper:
-    # If the record of a location has a phase of EN_ROUTE and the agent is at the location of the rubble,
-    # send a waiting_until_ready message to the requestor.
-    if record["phase"] == "EN_ROUTE":
-        if loc.x == x and loc.y == y:
-            send_message(f"AT_LOC|{me}|{loc_string}", [record["req_id"]])
-            record["phase"] = "waiting_until_ready"
-        return None
-
-    # If the record of a location has a phase of waiting_until_ready, then the helper and requestor will be able to dig.
-    if record["phase"] == "waiting_until_ready":
-        ready_to_dig = find_msg("READY_DIG", from_id = record["req_id"], min_parts = 4)
-        if ready_to_dig:
-            record["dig_round"] = int(ready_to_dig["parts"][3])
-            record["phase"] = "ready"
-            return record["dig_round"]
-        return None
-
-    # If both requestor and helper emit a "ready" message then both will return the dig round.
-    if record["phase"] == "ready":
-        return record.get("dig_round")
-
-    return None
-
-# read and parse through messages from the previous round (messages send at the end of a round)
-def read_inbox():
-    round_number = get_round_number()
-    # There is no messages that can be sent on round 0, so return an empty list.
-    if round_number <= 1:
-        return []
-    # Read the messages sent at the end of last round.
-    old_msg = read_messages(round_number - 1)
-    output = []
-    for m in old_msg:
-        # Get the str attribute from the Message object from read_messages()
-        message = m.message
-        # if | isn't in the str then don't do anything.
-        if "|" not in message:
-            continue
-        # To get each part of a message, split the message on |.
-        parts = message.split("|")
-        output.append({
-            "round_num": m.round_num,
-            "sender_id": m.sender_id,
-            "msg_type": parts[0],
-            "parts": parts,
-            "message": message,
-        })
-    return output
-
-# Two agent dig at a rubble location
-def handshake_for_dig(blk, rubble_loc: Location):
-    round_number = get_round_number()
-    me = get_id()
-    loc = get_location()
-    x, y = (rubble_loc.x, rubble_loc.y)
-    loc_string = f"{x},{y}"
-
-    # if there is no help_queue, set the help_queue to be an empty list.
-    if getattr(blk, "help_queue", None) is None:
-        blk.help_queue = []
-
-
-    # Look if there is already a record of help request for this rubble
-    record = None
-    for i in blk.help_queue:
-        if i.get("loc") == loc_string:
-            record = i
-            break
+    # Drop any stray placeholder record from pre-announcing so the FSM starts clean.
+    if record is not None and record.get("phase") == "pre_announce":
+        try:
+            blk.help_queue.remove(record)
+        except Exception:
+            pass
+        record = None
     # Read inbox.
     inbox = read_inbox()
 
@@ -417,31 +340,71 @@ class Route:
 def rubble_here_requires_pair(blk, loc: Location) -> bool | None:
     # cache lookup if known
     key = (loc.x, loc.y)
-    if hasattr(blk, "known_rubble") and key in blk.known_rubble and "agents_required" in blk.known_rubble[key]:
-        return blk.known_rubble[key]["agents_required"] >= 2
+    try:
+        kr = blk.known_rubble
+    except Exception:
+        kr = None
+    if isinstance(kr, dict) and key in kr and "agents_required" in kr[key]:
+        return kr[key]["agents_required"] >= 2
     # adjacent or same tile reveals full layers
     me = get_location()
     if max(abs(me.x - loc.x), abs(me.y - loc.y)) <= 1:
         top = get_cell_info_at(loc).top_layer
         if isinstance(top, Rubble):
-            if hasattr(blk, "known_rubble"):
-                blk.known_rubble[key] = {"agents_required": top.agents_required,
-                                         "energy_required": getattr(top, "energy_required", None)}
+            # ensure dict exists
+            try:
+                _ = blk.known_rubble
+            except Exception:
+                blk.known_rubble = {}
+            # read energy_required without getattr
+            try:
+                er = top.energy_required
+            except Exception:
+                er = None
+            blk.known_rubble[key] = {
+                "agents_required": top.agents_required,
+                "energy_required": er
+            }
             return top.agents_required >= 2
         return False
     return None
 
 def scan_policy(block, route):
+    # Only scan when close and not already scanned; otherwise keep moving.
     if route.ambiguous and route.probe_loc is not None:
-        return route.probe_loc
+        me = get_location()
+        p = route.probe_loc
+        dist = max(abs(me.x - p.x), abs(me.y - p.y))
+        key = (p.x, p.y)
+        try:
+            scanned = block.scanned
+        except Exception:
+            block.scanned = set()
+            scanned = block.scanned
+        if dist <= 3 and key not in scanned:
+            return route.probe_loc
     return None
 
 
-# renamed helpers
+#helpers
 def safe_is_safe(loc): return on_map(loc) and (not get_cell_info_at(loc).is_killer_cell())
 
+# Add a strong but finite penalty for rubble so A* prefers clean paths
+def rubble_penalty(loc):
+    top = get_cell_info_at(loc).top_layer
+    if isinstance(top, Rubble):
+        key = (loc.x, loc.y)
+        try:
+            kr = BLACKBOARD.known_rubble
+        except Exception:
+            kr = None
+        # If we already know it's single-agent rubble, small penalty; else big
+        if isinstance(kr, dict) and key in kr and kr[key].get("agents_required") == 1:
+            return 5
+        return 1000
+    return 0
 
-def safe_move_cost(loc): return max(1, get_cell_info_at(loc).move_cost)
+def safe_move_cost(loc): return max(1, get_cell_info_at(loc).move_cost) + rubble_penalty(loc)
 
 
 def safe_diag_heuristic(a, b):
@@ -545,7 +508,7 @@ def choose_leader():
     ids = [get_id()]
     for msg in read_messages():
         try:
-            text = msg.text
+            text = msg.message
         except Exception:
             text = ""
         if isinstance(text, str) and text.startswith("STATUS|"):
@@ -567,7 +530,7 @@ def handle_messages():
     global ASSIGNMENTS, TEAM_STATUS
     for msg in read_messages():
         try:
-            text = msg.text
+            text = msg.message
         except Exception:
             continue
 
@@ -609,7 +572,7 @@ def nearest_survivor(my_loc, survivors):
 
 
 def choose_charger(my_loc):
-    chargers = get_chrg()
+    chargers = get_charging_cells()
     if not chargers:
         return None
     return min(chargers, key=lambda c: abs(c.x - my_loc.x) + abs(c.y - my_loc.y))
@@ -625,13 +588,6 @@ SAVE_COST = 1
 
 
 # estimate whether there is a dig or not needed at the end
-# def estimate_goal_tail_energy(goal: Location) -> int:
-
-#     top = get_cell_info_at(goal).top_layer
-#     tail = SAVE_COST
-#     if isinstance(top, Rubble):
-#         tail += getattr(top, "energy_required", DEFAULT_DIG)
-#     return tail
 def estimate_goal_tail_energy(goal: Location) -> int:
     top = get_cell_info_at(goal).top_layer
     tail = SAVE_COST
@@ -672,7 +628,7 @@ def estimate_move_cost(path: list[Location]) -> int:
 def best_survivor_by_energy(my_loc: Location, survivors: list[Location]):
     best_s, best_path, best_cost = None, None, 10 ** 9
     for s in survivors:
-        p = aStar(my_loc, s)
+        p, g = safe_astar(my_loc, s)
         if p:
             c = estimate_path_energy_to_a_goal(p)
             if c < best_cost:
@@ -688,7 +644,7 @@ def best_charger_by_energy(my_loc: Location):
         return None, None, 10 ** 9
     best_c, best_p, best_cst = None, None, 10 ** 9
     for c in chargers:
-        p = aStar(my_loc, c)
+        p, g = safe_astar(my_loc, c)
         if p:
             cst = estimate_move_cost(p)
             if cst < best_cst:
@@ -740,16 +696,34 @@ def think():
 
     # --- Recharge logic ---
     if my_energy < 10:
+        # If we're standing on solo-dig rubble and can afford it, clear it first.
+        standing_top = get_cell_info_at(my_loc).top_layer
+        if isinstance(standing_top, Rubble):
+            need_pair = rubble_here_requires_pair(BLACKBOARD, my_loc)
+            if need_pair is False:
+                try:
+                    dig_cost = standing_top.energy_required
+                except Exception:
+                    dig_cost = 10
+                if my_energy >= dig_cost + 1:
+                    dig()
+                    return
         charger = choose_charger(my_loc)
         if charger:
-            path = aStar(my_loc, charger)
-            if path and len(path) > 0:
-                nxt = path[0]
-                move(my_loc.direction_to(nxt))
-            else:
-                move(Direction.CENTER)
-        else:
-            move(Direction.CENTER)
+            route = plan_route(my_loc, charger, BLACKBOARD)
+            probe = scan_policy(BLACKBOARD, route)
+            if probe is not None:
+                drone_scan(probe)
+                BLACKBOARD.scanned.add((probe.x, probe.y))
+                capture_rubble_knowledge(BLACKBOARD, probe)
+                return
+            if not route.blocked and route.directions:
+                step_dir = step_toward(route)
+                if step_dir is not None:
+                    move(step_dir)
+                    return
+        # fallback if no charger or no step available
+        move(Direction.CENTER)
         return
 
     # --- Follower behavior: follow assignment ---
@@ -759,16 +733,45 @@ def think():
 
     target = ASSIGNMENTS[me]
     goal = Location(target[0], target[1])
-    route = aStar(my_loc, goal)
-
-    if route and len(route) > 0:
-        nxt = route[0]
-        top_next = get_cell_info_at(nxt).top_layer
-        if isinstance(top_next, Rubble):
-            send_message(f"HELP_REQ|{me}|{nxt.x},{nxt.y}", [])
-            move(Direction.CENTER)
-            return
-        move(my_loc.direction_to(nxt))
+    #use plan_route/scan_policy/step_toward
+    route = plan_route(my_loc, goal, BLACKBOARD)
+    #If there is ambiguity about rubble requirements on path, scan first
+    probe = scan_policy(BLACKBOARD, route)
+    if probe is not None:
+        drone_scan(probe)
+        BLACKBOARD.scanned.add((probe.x, probe.y))
+        capture_rubble_knowledge(BLACKBOARD, probe)
         return
 
+    # If we have a concrete route, consider rubble logic both on current tile and next tile
+    # 1) If standing on rubble that needs a pair → run handshake and dig only on scheduled round
+    standing_top = get_cell_info_at(my_loc).top_layer
+    if isinstance(standing_top, Rubble):
+        needs_pair = rubble_here_requires_pair(BLACKBOARD, my_loc)
+        if needs_pair is True:
+            dig_round = handshake_for_dig(BLACKBOARD, my_loc)
+            if dig_round is not None and dig_round == get_round_number():
+                dig()
+                return
+            # waiting for partner/ready signal; don’t wander
+            move(Direction.CENTER)
+            return
+        # single-agent rubble: just dig now
+        dig()
+        return
+
+    # 2) Otherwise, advance along route; if next tile is rubble, request help pre-emptively
+    if not route.blocked and route.directions:
+        step_dir = step_toward(route)
+        if step_dir is not None:
+            nxt_loc = my_loc.add(step_dir)
+            top_next = get_cell_info_at(nxt_loc).top_layer
+            if isinstance(top_next, Rubble):
+                # Do not stall—step onto the rubble tile so the handshake/dig logic can progress.
+                move(step_dir)
+                return
+            move(step_dir)
+            return
+
+    # Fallback if blocked or no step found
     move(Direction.CENTER)
