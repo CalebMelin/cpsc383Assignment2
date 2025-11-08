@@ -31,6 +31,40 @@ DIRECTIONS_TIEBREAK_ORDER = [
 ]
 DIR_ORDER_IDX = {d: i for i, d in enumerate(DIRECTIONS_TIEBREAK_ORDER)}
 
+#--- global blackboard for Person 4 (persist known_rubble across rounds)
+class Blackboard:
+    pass
+BLACKBOARD = Blackboard()
+BLACKBOARD.known_rubble = {}
+# remember which rubble tiles we've already scanned so we don't spam scans
+BLACKBOARD.scanned = set()
+BLACKBOARD.help_queue = []
+
+#capture scanned rubble attributes into BLACKBOARD.known_rubble
+def capture_rubble_knowledge(blk, loc: Location) -> None:
+    try:
+        cell = get_cell_info_at(loc)
+        top = cell.top_layer
+        if isinstance(top, Rubble):
+            key = (loc.x, loc.y)
+            # ensure dict exists without getattr/hasattr
+            try:
+                _ = blk.known_rubble
+            except Exception:
+                blk.known_rubble = {}
+            # read energy_required without getattr
+            try:
+                er = top.energy_required
+            except Exception:
+                er = None
+            blk.known_rubble[key] = {
+                "agents_required": top.agents_required if isinstance(top, Rubble) else None,
+                "energy_required": er,
+            }
+    except Exception:
+        # best-effort cache; ignore any transient read issues
+        pass
+
 def isSame(a: Location, b: Location) -> bool:
     return a.x == b.x and a.y == b.y
 
